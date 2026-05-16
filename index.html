@@ -67,19 +67,6 @@
         .status.connected { color: #4ade80; }
         .status.error { color: #f87171; }
 
-        .token-meter {
-            font-size: 12px;
-            color: #666;
-            text-align: center;
-            min-height: 16px;
-            font-variant-numeric: tabular-nums;
-            letter-spacing: 0.3px;
-        }
-        .token-meter .count { color: #c4b5fd; font-weight: 500; }
-        .token-meter .sep { color: #333; margin: 0 6px; }
-        .token-meter.warn .count { color: #fbbf24; }
-        .token-meter.over .count { color: #f87171; }
-
         .tool-indicator {
             background: #1a1a2e;
             border: 1px solid #333;
@@ -140,7 +127,6 @@
         <p class="mic-label" id="micLabel">Click to start</p>
 
         <p class="status" id="status"></p>
-        <p class="token-meter" id="tokenMeter"></p>
 
         <div class="tool-indicator" id="toolIndicator">
             <div class="tool-spinner"></div>
@@ -163,33 +149,9 @@
         const micBtn = document.getElementById('micBtn');
         const micLabel = document.getElementById('micLabel');
         const statusEl = document.getElementById('status');
-        const tokenMeter = document.getElementById('tokenMeter');
         const toolIndicator = document.getElementById('toolIndicator');
         const toolName = document.getElementById('toolName');
         const transcript = document.getElementById('transcript');
-
-        function formatTokens(n) {
-            if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 1 : 2) + 'k';
-            return String(n);
-        }
-
-        function updateTokenMeter(current, threshold) {
-            if (current == null) { tokenMeter.textContent = ''; return; }
-            const pct = threshold ? Math.min(100, Math.round((current / threshold) * 100)) : null;
-            tokenMeter.classList.remove('warn', 'over');
-            if (threshold) {
-                if (current >= threshold) tokenMeter.classList.add('over');
-                else if (current >= threshold * 0.9) tokenMeter.classList.add('warn');
-            }
-            const parts = [
-                `<span class="count">${formatTokens(current)}</span> tokens`,
-            ];
-            if (threshold) {
-                parts.push(`<span class="sep">·</span>`);
-                parts.push(`${formatTokens(threshold)} budget (${pct}%)`);
-            }
-            tokenMeter.innerHTML = parts.join('');
-        }
 
         let currentUserText = '';
         let currentAgentText = '';
@@ -348,8 +310,6 @@
                         case 'interrupted': clearPlayback(); finishTurn(); break;
                         case 'status': setStatus(msg.message, 'connected'); break;
                         case 'error': setStatus('Error: ' + msg.message, 'error'); break;
-                        case 'token_usage': updateTokenMeter(msg.current, msg.threshold); break;
-                        case 'threshold_reached': updateTokenMeter(msg.current, msg.threshold); break;
                     }
                 };
 
@@ -375,8 +335,6 @@
 
             clearPlayback();
             hideTool();
-            tokenMeter.textContent = '';
-            tokenMeter.classList.remove('warn', 'over');
         }
     </script>
 </body>

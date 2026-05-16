@@ -17,12 +17,15 @@ The architecture deliberately separates three things:
 ```
 Smriti/
 ├── server.py                       # Entry point: FastAPI + WebSocket + Gemini Live
-├── index.html                      # Browser client: mic capture, audio playback, transcript UI
+├── index.html                      # Browser client: mic capture, audio playback, transcripts
 ├── tools/
-│   ├── __init__.py                 # Re-exports GraphOperation, execute, TOOL_DECLARATION
-│   └── graph_operation.py          # The one tool. Handles every vault operation.
+│   ├── __init__.py                 # Re-exports GraphOperation, execute, TOOL_DECLARATION, build_time_context
+│   ├── graph_operation.py          # The one tool. Handles every vault operation.
+│   └── time_context.py             # Builds the Asia/Kolkata time-awareness block injected into the system prompt
 ├── config/
-│   └── system_instructions.md      # System prompt loaded into Gemini at session start
+│   └── system_instructions.md      # System prompt — persona, link rules, decay logic, replica behavior, etc.
+├── future_plans/
+│   └── context_management.md       # Deferred design: three-prompt compaction, server-side buffer, logging
 ├── .env                            # GOOGLE_API_KEY / GEMINI_API_KEY, VAULT_PATH
 ├── .env.example                    # Template for .env
 ├── requirements.txt                # google-genai, fastapi, uvicorn, python-dotenv
@@ -37,7 +40,11 @@ Smriti/
 The orchestrator. On startup:
 
 1. Loads `.env` and validates `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) and `VAULT_PATH`.
-2. Defines `build_system_prompt(graph)` which concatenates `config/system_instructions.md` with the current contents of `identity.md`. This composite prompt is the model's full system instruction — the user's working memory is always present.
+2. Defines `build_system_prompt(graph)` which concatenates:
+   - `config/system_instructions.md`
+   - `build_time_context()` — fresh Asia/Kolkata time block (today/yesterday/tomorrow, last 7 / next 7 day enumeration, last/next month range, current time + part of day)
+   - The current contents of `identity.md`
+   This composite is the model's full system instruction — working memory is always present and dates are always current.
 3. Serves `index.html` at `GET /`.
 4. Exposes a WebSocket at `/ws`.
 
@@ -84,7 +91,11 @@ The single tool. Class `GraphOperation` wraps the vault; module-level `execute(g
   title: GraphX               # human-readable name
   aliases:                    # YAML list — Obsidian uses this for graph labels
     - GraphX                  # (with Front Matter Title plugin enabled)
-  type: project               # project | event | person | concept | goal | note | ...
+  description: One-to-three   # short gist surfaced by list_nodes peeks
+    line summary
+  type:                       # NORMALIZED lowercase list — supports multiple
+    - project
+    - work
   created: 2026-05-16
   updated: 2026-05-16
   ```
@@ -92,6 +103,20 @@ The single tool. Class `GraphOperation` wraps the vault; module-level `execute(g
 **Why filenames are pure IDs**
 
 Obsidian resolves `[[15900505552053]]` by looking for a file literally named `15900505552053.md`. If the filename were `graphx-15900505552053.md`, Obsidian would treat the link as broken and silently create a phantom `15900505552053.md`. So filenames are IDs, and the title is surfaced via the `aliases:` frontmatter list (which the Front Matter Title community plugin renders in graph view, tabs, file explorer, etc.).
+
+**Description field**
+
+Every node has a 1-3 line `description:` in frontmatter. It's the *gist* — what someone needs to recall this entity at a glance. The agent must keep it current. Surfaced by `list_nodes` peeks so the agent can scan neighbors cheaply (id + title + type + description) before deciding which to drill into.
+
+**Type as a normalized list**
+
+`type` is always a list. A person can be `[friend, colleague]`. The agent can pass any reasonable spelling — `"Friend, Co-Worker"` or `["Friend", "co-worker"]` — and the server normalizes (lowercase, spaces → hyphens, dedupes order-preserving). This enables filtering: `list_nodes(node_id=..., type="friend")` returns only friend-typed neighbors.
+
+**Auto-timestamping on writes**
+
+Every line that is *added or modified* in `identity.md`, `update_node`, or `edit_node` gets `<!-- YYYY-MM-DD HH:MM -->` (Asia/Kolkata) appended automatically by the server. The agent does NOT write these markers; it just writes content. Unchanged lines keep their old stamps (computed via `difflib.SequenceMatcher` on stamp-stripped content) — this is what makes the stamp mean "last reinforced." The agent reads stamps to reason about age and decay.
+
+Heading lines (`#`, `##`, …), blank lines, code fences, and frontmatter delimiters are never stamped. `create_node` also stamps its initial body so every line has a baseline age.
 
 **Link format — strictly enforced**
 
@@ -102,47 +127,86 @@ All links are `[[<14-digit-id>|<Display Text>]]`. The validator `_validate_links
 
 A rejected call returns `{"status": "error", "error": "...", "link_errors": [...]}` so the model can fix and retry.
 
+**ID cache for the validator**
+
+`GraphOperation` keeps a `_id_cache: set[str]` of existing node IDs. Built lazily on first use (single `glob` pass), invalidated on `create_node` / `delete_node`. Lookup is O(1) thereafter — no full vault scan per write.
+
 **Actions exposed via `execute(graph, action, **kwargs)`**
 
 | Action | Required args | What it does |
 |---|---|---|
 | `read_identity` | — | Read `identity.md`, return content + extracted links |
-| `write_identity` | `content` | Overwrite `identity.md`. Preserves/refreshes frontmatter. Validates links. |
-| `read_node` | `node_id` | Read a node by ID. Returns content, parsed metadata, extracted links. |
-| `create_node` | `title`, `type`, optional `content` | Generate a new 14-digit ID (collision-checked), write `{id}.md` with full frontmatter including `aliases: [title]`. Returns the ID. |
-| `update_node` | `node_id`, `content` | Overwrite a node's content. Bumps `updated`. Keeps `id`. Syncs `aliases` to current `title`. Validates links. |
-| `edit_node` | `node_id`, `old_string`, `new_string`, optional `replace_all` | Precise text replacement. Validates resulting links. |
-| `list_nodes` | — | List every node with id/title/type/updated. |
+| `write_identity` | `content` | Overwrite `identity.md`. Preserves frontmatter, refreshes `updated`. Validates links. Auto-stamps modified body lines. |
+| `read_node` | `node_id` | Read a node by ID. Returns content, parsed metadata, `description`, `type`, extracted links. |
+| `create_node` | `title`, `type`, optional `content`, optional `description` | Generate a new 14-digit ID (collision-checked against cache), write `{id}.md` with full frontmatter including `aliases: [title]`, normalized `type` list, `description`. Initial body lines are stamped. Returns the ID. |
+| `update_node` | `node_id`, `content`, optional `description` | Overwrite a node's content. Merges frontmatter, bumps `updated`, keeps `id`, syncs `aliases` to current `title`, re-normalizes `type`. Validates links. Auto-stamps modified body lines. |
+| `edit_node` | `node_id`, `old_string`, `new_string`, optional `replace_all` | Precise text replacement. Validates resulting links. Auto-stamps modified body lines. |
+| `list_nodes` | optional `node_id`, optional `type` | **Neighbor traversal**, not a flat dump. Walks `[[...]]` links of one source node (defaults to `identity.md`) and returns peeks `{id, title, type, description, updated}` for each. Optional `type` filters to neighbors with that type. Never globs the vault. |
 | `extract_links` | `content` | Parse `[[id\|display]]` from arbitrary content; returns `[{id, display}, ...]`. |
-| `delete_node` | `node_id` | Delete the file, return backup content. |
+| `delete_node` | `node_id` | Delete the file, return backup content. Invalidates ID cache. |
 
 **IDs**
 
 - 14 numeric digits, generated by `secrets.choice("0123456789")` in `_new_id()`.
-- Collision-checked against `{vault}/{id}.md` before use.
+- Collision-checked against the ID cache and `{vault}/{id}.md` before use.
 - The agent must NEVER invent an ID. It only ever uses the ID returned by a prior `create_node` call.
 
 **Frontmatter parser**
 
-`_parse_frontmatter()` handles scalar fields (`key: value`), inline lists (`key: [a, b, c]`), and multi-line YAML lists (`key:\n  - a\n  - b`). `_build_frontmatter()` writes lists back in multi-line form so `aliases:` round-trips cleanly.
+`_parse_frontmatter()` handles scalar fields (`key: value`), inline lists (`key: [a, b, c]`), and multi-line YAML lists (`key:\n  - a\n  - b`). `_build_frontmatter()` writes lists back in multi-line form so `aliases:` and `type:` round-trip cleanly.
+
+### `tools/time_context.py`
+
+Builds the Asia/Kolkata time-awareness block injected into the system prompt at every WebSocket connect. Includes:
+
+- Now (date, time, weekday, part of day)
+- Today / yesterday / day-before / tomorrow / day-after as absolute dates
+- Full enumeration of the last 7 and next 7 days with weekday names
+- Last/next month range
+
+The agent never has to do date arithmetic — it just reads the block. Part-of-day classifications (`morning`, `midday`, `evening`, `late evening`, `late night`) color the agent's tone naturally.
 
 ### `config/system_instructions.md`
 
-The system prompt. Loaded by `build_system_prompt()` every time `/ws` opens and again whenever the model reads `identity.md`. Contains:
+The system prompt. Loaded by `build_system_prompt()` every time `/ws` opens. The full rewrite covers:
 
-1. The agent's persona — quiet, curious, friend-like; explicitly forbids announcements like "I've created a node" or "I've updated your identity".
-2. Vault and node schema definitions.
-3. Hard rules about link format with ✅ / ❌ examples — the most important section, because Gemini will otherwise hallucinate plausible-looking link targets like `[[project-id|GraphX]]`.
-4. Workflow: listen, reply naturally, silently maintain the graph.
+1. **Persona** — quiet, curious, friend-like; explicitly forbids announcements ("I've created a node", "I've updated your identity").
+2. **Replica behavior** — the agent observes the user's phrasing, language mix, humor, emotional tone, and gradually mirrors them. Core Identity in `identity.md` is allowed to grow as the replica deepens.
+3. **Backbone** — agent has its own perspective; pushes back gently when the user is wrong; not a yes-machine.
+4. **Vault schema** — node frontmatter (id, title, aliases, description, type list, created, updated).
+5. **Link discipline** — `[[14digitid|Display]]` rules with ✅/❌ examples. Most important section; Gemini regresses to bad behavior fast without it.
+6. **identity.md structure** — five sections, top to bottom, stable → frequent:
+   - Core Identity (stable, can grow with personality observations)
+   - People (close circle, concise links; inner ~5 never decay)
+   - Life Phase (slow-changing)
+   - Events (live; absolute dates only; decays ~2 weeks past event)
+   - Active Focus (live, detailed, decays in 2-3 days without mention)
+7. **Auto-linking** — when mentioning an entity inside a node, the agent must link it (`[[id|Name]]`) not write plain text. Lookup strategy: identity.md → current node neighbors → ask user → create.
+8. **Decay = relocation** — information is never deleted; demoted from identity.md to a properly-linked node first, only then removed from the flash.
+9. **Time awareness** — relative speech ("tomorrow") is fine in conversation; writes must resolve to absolute dates. Greetings adapt to part of day. Contradictions trigger human curiosity, not silent overwrites.
+10. **Tool discipline** — never invent IDs, prefer `edit_node` for small changes, always include `description` on `create_node`, fix and retry on `link_errors`.
 
 Do NOT relax the "no announcements" rules or the link format rules without thinking through the consequences — the model regresses to bad behavior fast.
+
+### `future_plans/context_management.md`
+
+Captures the deferred three-prompt compaction design we discussed but couldn't implement because Gemini Live manages session history server-side and exposes no manipulation API. Documents:
+
+- The pre-compaction alert / compaction / post-compaction-notice flow
+- Configuration shape (`COMPACTION_THRESHOLD_TOKENS`, `COMPACTION_PRE_ALERT_PERCENT`, etc.)
+- Required server-side conversation buffer
+- UI hook events (`compaction_alert`, `compaction_start`, `compaction_complete`, `pause_input`, `resume_input`)
+- Logging plan (`logs/{timestamp}_session.log`, async fire-and-forget)
+- The API constraint that blocks all of the above
+
+Revisit when a different voice API exposes manipulable history or when we switch to a self-managed STT → LLM → TTS pipeline.
 
 ### `.env` and `.env.example`
 
 Required keys:
 
 ```
-GOOGLE_API_KEY=...        # or GEMINI_API_KEY; server.py accepts either
+GOOGLE_API_KEY=...                  # or GEMINI_API_KEY; server.py accepts either
 VAULT_PATH=C:/path/to/ObsidianVault
 ```
 
@@ -173,7 +237,9 @@ server.py (browser_to_gemini coroutine)
   ▼
 Gemini Live session (model="gemini-3.1-flash-live-preview", voice="Aoede")
   │
-  ├── system_instruction = config/system_instructions.md + current identity.md
+  ├── system_instruction = config/system_instructions.md
+  │                        + time_context (Asia/Kolkata)
+  │                        + current identity.md
   ├── tools = [graph_operation]
   │
   ▼
@@ -186,29 +252,35 @@ Model decides:
   │                                                   │
   │                                                   ▼
   │                                          GraphOperation writes to vault
+  │                                          (auto-stamps modified lines,
+  │                                          validates links via cached ID set)
   │                                                   │
   │                                                   ▼
   │                                          send_tool_response → model continues
   ▼
-Continue until turn_complete
+Continue until turn_complete, then loop until WS closes
 ```
 
 ## Conventions When Modifying This Project
 
 - **Don't add folders inside the vault.** The vault is flat by design — one level, IDs as filenames. Anything else breaks Obsidian's resolver and the link validator.
 - **Don't add more tools.** `graph_operation` with action flags is the contract. More tools = more model confusion. Add a new action to the existing tool instead.
-- **Don't write conversation logs or system state to the vault.** The vault is the user's brain content only. Chat history lives in memory or in this codebase if needed.
+- **Don't expose a flat full-vault listing.** `list_nodes` is intentionally neighbor-traversal only. As the vault scales to thousands of nodes, dumping everything would explode the context window.
+- **Don't write conversation logs or system state to the vault.** The vault is the user's brain content only. Chat history lives in memory (or in `logs/` if we ever add the logging plan from `future_plans/`).
 - **Don't let the model invent IDs.** Every write that introduces a link must use an ID returned by a real `create_node` call. The server-side validator enforces this; don't disable it.
+- **Don't have the model write `<!-- date -->` stamps manually.** The server appends them automatically on modified lines. If you change this, update the system prompt section that tells the model not to write stamps.
 - **Don't change the voice without telling the user.** It's pinned to `Aoede` because the user explicitly asked for a stable voice.
-- **When editing `system_instructions.md`**: changes here propagate on the next WebSocket connection. No restart needed unless `server.py` itself changed.
-- **When editing `graph_operation.py` or `server.py`**: restart `python server.py`.
+- **Don't change the timezone.** It's pinned to `Asia/Kolkata` for time context, greetings, and stamps.
+- **When editing `system_instructions.md`**: changes propagate on the next WebSocket connection. No restart needed unless `server.py` itself changed.
+- **When editing `graph_operation.py`, `time_context.py`, or `server.py`**: restart `python server.py`.
 
 ## Known Sharp Edges
 
 - **Obsidian graph labels show the filename (the ID) by default.** Install the community plugin **"Front Matter Title"** by Snezhig, enable its "Graph" feature, and set the title field to `title`. Frontmatter already has both `title:` and `aliases:` to feed it.
-- **Identity.md must stay tight.** Target under ~10,000 chars. Detail belongs in nodes, not in identity. The system prompt enforces this but it's worth watching during long sessions.
-- **`_parse_frontmatter` is hand-rolled** (not PyYAML) to avoid a dep. It supports the subset the agent actually writes (scalars + flat lists). If you add nested structures, switch to PyYAML.
-- **Validator scans the whole vault** on every write to build the set of existing IDs. Fine for thousands of nodes; if the vault grows huge, cache it on the `GraphOperation` instance.
+- **Identity.md target size.** The user is fine with up to ~50k characters; we don't cap it. Just keep detail in nodes when it belongs there, not in the flash.
+- **`_parse_frontmatter` is hand-rolled** (not PyYAML) to avoid a dep. It supports the subset the agent actually writes (scalars + flat lists, inline or multi-line). If you add nested structures, switch to PyYAML.
+- **Validator ID cache is per-`GraphOperation` instance.** A fresh instance is created per WebSocket connection (server-side). Cross-process edits to the vault folder won't be seen until the next connect — fine for the current single-server setup.
+- **Voice-mode history is owned by Google.** We can read `usage_metadata` but cannot read, prune, summarize, or replay the session. Hence the threshold reminder approach; full compaction is parked in `future_plans/`.
 
 ## Quick Commands
 

@@ -31,13 +31,7 @@ if not API_KEY:
 if not VAULT_PATH:
     raise SystemExit("ERROR: VAULT_PATH missing in .env")
 
-try:
-    TOKEN_THRESHOLD = int(os.environ.get("TOKEN_THRESHOLD", "65000"))
-except ValueError:
-    TOKEN_THRESHOLD = 65000
-
 SYSTEM_PROMPT_PATH = ROOT / "config" / "system_instructions.md"
-THRESHOLD_REMINDER_PATH = ROOT / "config" / "threshold_reminder.md"
 
 app = FastAPI()
 
@@ -63,14 +57,6 @@ async def serve_index():
     return FileResponse(ROOT / "index.html")
 
 
-@app.get("/token-tracker")
-async def serve_token_tracker():
-    test_file = ROOT / "test" / "token_tracker_ui.html"
-    if test_file.exists():
-        return FileResponse(test_file)
-    return {"error": "Token tracker UI not found"}
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -92,13 +78,6 @@ async def websocket_endpoint(ws: WebSocket):
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
-
-    threshold_reminder_text = (
-        THRESHOLD_REMINDER_PATH.read_text(encoding="utf-8")
-        if THRESHOLD_REMINDER_PATH.exists()
-        else ""
-    )
-    reminder_sent = False
 
     try:
         async with client.aio.live.connect(
@@ -124,7 +103,6 @@ async def websocket_endpoint(ws: WebSocket):
                     pass
 
             async def gemini_to_browser():
-                nonlocal reminder_sent
                 try:
                     while True:
                         async for message in session.receive():
@@ -145,36 +123,6 @@ async def websocket_endpoint(ws: WebSocket):
                                         await ws.send_json({"type": "output_transcript", "text": text})
 
                                 if message.server_content.turn_complete:
-                                    usage = getattr(message, "usage_metadata", None)
-                                    if usage is not None:
-                                        prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
-                                        response_tokens = getattr(usage, "response_token_count", None) or 0
-                                        total = getattr(usage, "total_token_count", None) or 0
-                                        await ws.send_json({
-                                            "type": "token_usage",
-                                            "prompt": prompt_tokens,
-                                            "response": response_tokens,
-                                            "current": total,
-                                            "threshold": TOKEN_THRESHOLD,
-                                        })
-                                        print(f"[TOKENS] Prompt: {prompt_tokens}, Response: {response_tokens}, Total: {total}")
-                                        if (
-                                            not reminder_sent
-                                            and threshold_reminder_text
-                                            and total >= TOKEN_THRESHOLD
-                                        ):
-                                            try:
-                                                await session.send_realtime_input(
-                                                    text=threshold_reminder_text,
-                                                )
-                                                reminder_sent = True
-                                                await ws.send_json({
-                                                    "type": "threshold_reached",
-                                                    "current": total,
-                                                    "threshold": TOKEN_THRESHOLD,
-                                                })
-                                            except Exception as inj_err:
-                                                print(f"Failed to inject threshold reminder: {inj_err}")
                                     await ws.send_json({"type": "turn_complete"})
                                     break
 
