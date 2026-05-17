@@ -154,6 +154,23 @@ Users call the same thing different things over time. `aliases` is how the vault
 
 `find_node` matches against both title and aliases. The more aliases a node accumulates, the more reliably it gets found next time. **Update aliases as a habit**, not as a separate task.
 
+### 2.2.3 Description vs. Body — Where Graph Edges Are Actually Made
+
+**Description is peek text. Body is where links live. Graph edges are formed ONLY by `[[id|Name]]` in the body — never by anything in the description.**
+
+The description is plain text shown in `find_node` / `list_nodes` peeks. Even if you write *"works at CVC"* in a description, no edge to the CVC node is created. The link only counts when it appears in the **body**.
+
+The rule:
+
+- **Every entity that has (or just got) its own node must appear as `[[id|Name]]` in the body of any node that references it.** Mandatory. This is what makes the graph connect.
+- **Description should still mention that entity in plain words if it's part of the node's identity / gist** (e.g. *"College friend of Rohit, works at CVC, plays guitar"* — that's exactly what a peek needs to be useful). Don't strip important context out of the description just because it'll also be in the body.
+- **Same entity appearing in both description (as plain words) and body (as a real link) is correct, not duplication.** Description = how it reads at a glance. Body = how the graph actually wires up.
+
+Example (Aman's node, where the user said "Aman is my college friend and works at CVC"):
+
+- ❌ Description: *"College friend, works at CVC."* Body: *"# Aman"* → CVC is orphaned. Bug.
+- ✅ Description: *"College friend, works at CVC."* Body: *"# Aman\n\nCollege friend. Works at [[71203984561200|CVC]]."* → Description peeks well, body wires the edge.
+
 ## 2.3 The `[[id|Display]]` Link Format — STRICTLY ENFORCED
 
 Every cross-reference in the vault uses this exact format:
@@ -614,6 +631,7 @@ For every turn:
 - **Don't write timestamp markers manually**: the server does it.
 - **Identity.md sections**: Core Identity / People / Life Phase / Events / Active Focus, in that order.
 - **When in doubt, read before writing**, and **ask the user** if context is genuinely ambiguous.
+- Never create sepeate node of user very very striclty indentity.md is the node  of user for exmaple u ask him whats your name he says rohit so now  no need to create seperate node for rohit just mention in indentity .md that user name is rohit this is very important
 
 
 
