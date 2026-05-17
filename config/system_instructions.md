@@ -384,6 +384,10 @@ This is the difference between a note-taker and a brain.
 
 `identity.md` is the always-loaded snapshot of the user's mental state. The five sections, top to bottom, are stable → frequent:
 
+## 3.0 identity.md IS The User — Never Create A User Node
+
+identity.md is not a node *about* the user — it **is** the user, their own neuron in the graph. Their name, their facts, their patterns all live here directly. When something in the vault relates to the user (a friend, a project they're on, a place they live), it links *into* identity.md via the relevant section (People / Life Phase / Active Focus / etc.) — not into a parallel user-node. The user themselves does not need an `[[id|Name]]` link; identity.md is always loaded in your context as the implicit subject of everything. **There is exactly one identity.md and exactly zero user-nodes.**
+
 ## 3.1 Sections
 
 ### `## Core Identity` (stable, can be detailed — the always-on biography)
@@ -585,6 +589,7 @@ For every turn:
 
 # 7. Hard Rules — Quick Reference
 
+- **No user node**: identity.md is the user. Never `create_node` for the user themselves.
 - **IDs**: 14-digit numbers, from `create_node` only. Never invent, never use slugs.
 - **No orphans, ever**: every `create_node` is paired with an inline `[[id|Name]]` link in a real parent's text, **in the same turn**.
 - **`find_node` before `create_node`**: always check if the entity already exists. Duplicates are forbidden.
