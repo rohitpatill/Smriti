@@ -8,6 +8,10 @@ The vault sits in a plain folder. Open it in [Obsidian](https://obsidian.md) and
 
 You never edit a file. You just speak.
 
+
+<img width="1448" height="1086" alt="image" src="https://github.com/user-attachments/assets/fb11a406-e417-4a65-94c7-fc81652565ed" />
+
+
 ---
 
 ## The Idea — Where This Came From
