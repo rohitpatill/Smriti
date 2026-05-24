@@ -66,7 +66,7 @@ class SystemInstructionsInput(BaseModel):
 @mcp.tool(
     name="get_system_instructions",
     annotations={
-        "title": "Get Smriti System Instructions (MANDATORY FIRST CALL)",
+        "title": "⚠️ CALL THIS FIRST — Smriti System Instructions (REQUIRED BEFORE ANY OTHER TOOL)",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -74,29 +74,43 @@ class SystemInstructionsInput(BaseModel):
     },
 )
 async def get_system_instructions(params: SystemInstructionsInput) -> str:
-    """MANDATORY: call this tool FIRST, before any other tool, at the start of
-    every session. Without it you DO NOT know how to operate Smriti's
-    second-brain vault — link rules, node schema, identity.md structure,
-    decay logic, persona, and all behavioral constraints are defined here.
+    """⚠️ THIS TOOL MUST BE CALLED FIRST. BEFORE ANYTHING ELSE. NO EXCEPTIONS.
+
+    HARD RULE: Do NOT call `graph_operation`, `get_time_context`, or respond
+    to the user in any meaningful way until this tool has been called and its
+    output has been read in full. This is not optional. This is not a
+    suggestion. If you skip this call you will operate Smriti incorrectly —
+    you will create orphan nodes, violate link rules, corrupt identity.md,
+    and break the vault.
+
+    AUTO-INVOKE CONTRACT: The moment this MCP server connects, call this
+    tool immediately — before the user says a single word. Do not wait for
+    the user to ask. Do not wait to see what they want. Call it first,
+    unconditionally, every session, every time.
+
+    WHY: Smriti has a strict operating contract — 14-digit node IDs, mandatory
+    [[id|Display]] link format, no orphan nodes, find_node before create_node,
+    identity.md is the user (never create a user node), decay/promotion rules,
+    persona behavior, absolute dates in writes, silent bookkeeping, and more.
+    None of this is in a system prompt. This tool IS the system prompt.
+    Without it you are flying blind and will corrupt the user's second brain.
 
     Returns one composite bundle:
 
-    1. The full Smriti system prompt (persona, vault schema, link format,
-       identity.md sections, auto-linking algorithm, decay/promotion rules,
-       hard rules, etc.).
-    2. A fresh Asia/Kolkata time-awareness block (now, today, yesterday,
-       tomorrow, last/next 7 days, last/next month range, part of day).
-    3. The current contents of `identity.md` — the user's always-loaded
-       working-memory flash (who they are, who's in their close circle,
-       current life phase, upcoming events, active focus).
+    1. Full Smriti system prompt — persona, vault schema, [[id|Display]] link
+       discipline, identity.md section structure (Core Identity / People /
+       Life Phase / Events / Active Focus), auto-linking algorithm,
+       decay/promotion rules, node-worthiness rules, all hard rules.
+    2. Fresh Asia/Kolkata time block — now (HH:MM + part of day), today,
+       yesterday, tomorrow, last/next 7 days, last/next month range.
+    3. Current identity.md — the user's working-memory flash: who they are,
+       close circle, current life phase, upcoming events, active focus.
 
-    Behavior contract for the calling agent:
-    - Treat the returned text as your operating instructions for the entire
-      session. Read it fully before using `graph_operation`.
-    - Identity.md is the user themselves — never create a separate user
-      node. All other behavior is governed by the system prompt section.
-    - On long sessions (hours), call `get_time_context` periodically to
-      refresh date awareness; the time block in this bundle is a snapshot.
+    After calling this tool:
+    - Read the output fully before touching graph_operation.
+    - Treat it as your operating instructions for the entire session.
+    - For long sessions (hours), call get_time_context to refresh dates.
+    - Never narrate that you called this tool. Just use what you learned.
 
     Args:
         params (SystemInstructionsInput): No parameters required.
@@ -240,10 +254,11 @@ async def graph_operation(params: GraphOperationInput) -> dict:
     hidden-information recall by free-text. Pass only the args the chosen
     action needs.
 
-    Prerequisite: call `get_system_instructions` once at session start —
-    that bundle contains the full link discipline, node schema, identity.md
-    structure, decay rules, and behavioral constraints that govern correct
-    use of every action below.
+    ⚠️ PREREQUISITE — HARD STOP: If you have not yet called
+    `get_system_instructions` this session, STOP. Call it now. Do not
+    pass any action to this tool until you have read the full system
+    instructions bundle. Calling graph_operation without that context
+    will produce broken nodes, invalid links, and vault corruption.
 
     Actions:
       - read_identity: Read identity.md (already provided in the system
