@@ -16,7 +16,8 @@ The architecture deliberately separates three things:
 
 ```
 Smriti/
-├── server.py                       # Entry point: FastAPI + WebSocket + Gemini Live
+├── server.py                       # Voice entry point: FastAPI + WebSocket + Gemini Live
+├── mcp_server.py                   # MCP entry point: stdio server for any MCP-aware client
 ├── index.html                      # Browser client: mic capture, audio playback, transcripts
 ├── tools/
 │   ├── __init__.py                 # Re-exports GraphOperation, execute, TOOL_DECLARATION, build_time_context
@@ -28,7 +29,7 @@ Smriti/
 │   └── context_management.md       # Deferred design: three-prompt compaction, server-side buffer, logging
 ├── .env                            # GOOGLE_API_KEY / GEMINI_API_KEY, VAULT_PATH
 ├── .env.example                    # Template for .env
-├── requirements.txt                # google-genai, fastapi, uvicorn, python-dotenv
+├── requirements.txt                # google-genai, fastapi, uvicorn, python-dotenv, mcp
 ├── README.md                       # User-facing quick start
 └── CLAUDE.md                       # This file
 ```
@@ -188,6 +189,39 @@ The system prompt. Loaded by `build_system_prompt()` every time `/ws` opens. The
 
 Do NOT relax the "no announcements" rules or the link format rules without thinking through the consequences — the model regresses to bad behavior fast.
 
+### `mcp_server.py`
+
+The MCP interface to the same vault. Any MCP-aware client (Claude Desktop, Cursor, Claude Code, Continue, etc.) can drive the user's second brain through this server over stdio — no browser, no mic, no Gemini.
+
+**Same tools package, zero code duplication.** Imports `GraphOperation`, `execute`, and `build_time_context` from `tools/` directly. Zero logic lives in `mcp_server.py` itself beyond wiring. Zero changes to `tools/` or `config/`.
+
+**Three tools exposed:**
+
+| Tool | Purpose |
+|---|---|
+| `get_system_instructions` | **Call this first, every session, unconditionally.** Returns `system_instructions.md` + fresh time block + current `identity.md` as one bundle — the same composite `server.py` builds into the Gemini system prompt. This tool IS the system prompt for MCP clients. |
+| `graph_operation` | The same 11-action vault workhorse as in voice mode. Schema rewritten as a Pydantic model (field names and descriptions copied verbatim from `TOOL_DECLARATION`) because FastMCP needs Pydantic for JSON Schema generation. Dispatch goes straight to `execute(graph, **kwargs)`. |
+| `get_time_context` | Returns a fresh Asia/Kolkata time block. Call mid-session on long conversations where the snapshot from `get_system_instructions` has gone stale. |
+
+**`get_system_instructions` enforcement.** The tool title and description use hard imperative language ("CALL THIS FIRST. BEFORE ANYTHING ELSE. NO EXCEPTIONS. AUTO-INVOKE CONTRACT.") and `graph_operation` contains a "HARD STOP" block that tells the model to pause and call `get_system_instructions` if it hasn't yet. This is the only mechanism available to guarantee system-prompt delivery to clients that don't implement MCP Prompts.
+
+**One `GraphOperation` instance per process** (vs per-WebSocket-connection in voice mode). Single user, single vault — fine.
+
+**Transport: stdio.** Run with `python mcp_server.py`. Add to an MCP client config as:
+
+```json
+{
+  "mcpServers": {
+    "smriti": {
+      "command": "python",
+      "args": ["D:/Study/Smriti/mcp_server.py"]
+    }
+  }
+}
+```
+
+Only `VAULT_PATH` is required in `.env`. No `GOOGLE_API_KEY` needed for MCP mode.
+
 ### `future_plans/context_management.md`
 
 Captures the deferred three-prompt compaction design we discussed but couldn't implement because Gemini Live manages session history server-side and exposes no manipulation API. Documents:
@@ -219,9 +253,10 @@ google-genai>=1.68.0
 fastapi
 uvicorn[standard]
 python-dotenv
+mcp>=1.2.0
 ```
 
-No build tooling, no Node, no compiler. `pip install -r requirements.txt` and `python server.py` is the entire install.
+No build tooling, no Node, no compiler. `pip install -r requirements.txt` is the entire install. `mcp` is only required for `mcp_server.py`; `server.py` does not use it.
 
 ## Runtime Flow
 
@@ -273,6 +308,8 @@ Continue until turn_complete, then loop until WS closes
 - **Don't change the timezone.** It's pinned to `Asia/Kolkata` for time context, greetings, and stamps.
 - **When editing `system_instructions.md`**: changes propagate on the next WebSocket connection. No restart needed unless `server.py` itself changed.
 - **When editing `graph_operation.py`, `time_context.py`, or `server.py`**: restart `python server.py`.
+- **When editing `graph_operation.py` or `time_context.py`**: also restart `python mcp_server.py` if it's running — both servers share the same `tools/` module.
+- **`mcp_server.py` and `server.py` are independent entry points.** Either can run alone or both simultaneously against the same vault. They do not share a process or any state beyond the vault files on disk.
 
 ## Known Sharp Edges
 
@@ -288,10 +325,13 @@ Continue until turn_complete, then loop until WS closes
 # install
 pip install -r requirements.txt
 
-# run
+# run voice mode (Gemini Live, browser mic)
 python server.py
 # → opens on http://localhost:8002
 
-# smoke test the tool without the server
+# run MCP mode (stdio, any MCP client)
+python mcp_server.py
+
+# smoke test the tool without either server
 python -c "from tools import GraphOperation, execute; g = GraphOperation('C:/tmp/test_vault'); print(execute(g, 'list_nodes'))"
 ```
